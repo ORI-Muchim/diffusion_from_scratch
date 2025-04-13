@@ -225,9 +225,9 @@ def sample_diffusion(model, shape, sampling_method='ddpm', ddim_steps=100, ddim_
     return imgs
 
 # Image contrast enhancement function
-def enhance_contrast(tensor_images, percentile_low=5, percentile_high=95):
+def enhance_contrast(tensor_images, percentile_low=5, percentile_high=95, reduction_factor=0.3):
     batch_size = tensor_images.shape[0]
-    enhanced_images = []
+    processed_images = []
     
     # Process each image in the batch
     for i in range(batch_size):
@@ -237,7 +237,6 @@ def enhance_contrast(tensor_images, percentile_low=5, percentile_high=95):
         for c in range(img.shape[0]):
             channel = img[c]
             
-            # Calculate boundaries
             with torch.no_grad():
                 sorted_vals = torch.sort(channel.flatten())[0]
                 n_elements = sorted_vals.shape[0]
@@ -247,14 +246,15 @@ def enhance_contrast(tensor_images, percentile_low=5, percentile_high=95):
                 low_val = sorted_vals[low_idx]
                 high_val = sorted_vals[high_idx]
                 
-                # Expand value range (0~1)
+                # Apply contrast reduction
                 if high_val > low_val:
-                    channel = torch.clamp((channel - low_val) / (high_val - low_val), 0, 1)
-                    img[c] = channel
+                    normalized = (channel - low_val) / (high_val - low_val)  # Normalize to [0, 1]
+                    reduced = 0.5 + (normalized - 0.5) * (1 - reduction_factor)  # Shift toward 0.5
+                    img[c] = torch.clamp(reduced, 0, 1)  # Clip to [0, 1]
         
-        enhanced_images.append(img)
+        processed_images.append(img)
     
-    return torch.stack(enhanced_images)
+    return torch.stack(processed_images)
 
 # Visualize diffusion steps
 def visualize_diffusion_steps(x_start, writer, num_steps=10):
