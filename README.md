@@ -35,7 +35,7 @@ pip install torch torchvision numpy matplotlib tensorboard pillow
 
 Train with MNIST (default):
 ```bash
-python train.py --use_mnist
+python train.py
 ```
 
 Train with custom dataset:
