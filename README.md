@@ -10,6 +10,8 @@
 
 </div>
 
+![Result](./output/generated_images_20250414-023134/generation_process.png)
+
 -----
 
 ## ✨ Key Features
