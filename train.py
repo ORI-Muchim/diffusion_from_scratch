@@ -828,8 +828,8 @@ def main():
         pin_memory=True if device == "cuda" else False
     )
     
-    # Initialize model - simplified version
-    print(f"Initializing SimpleDiffusionModel with model type {hparams.model_type}")
+    # Initialize model
+    print(f"Initializing DiffusionModel...")
     model_init_args = {
         'image_channels': hparams.image_channels, 
         'time_emb_dim': hparams.time_emb_dim,

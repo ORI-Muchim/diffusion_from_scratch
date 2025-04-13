@@ -35,7 +35,12 @@ pip install torch torchvision numpy matplotlib tensorboard pillow
 
 Train with MNIST (default):
 ```bash
-python train.py --batch_size 64 --epochs 100
+python train.py --batch_size 64 --use_mnist
+```
+
+Train from existing model:
+```bash
+python train.py --use_mnist --resume path/to/model
 ```
 
 Train with custom dataset:
