@@ -13,6 +13,62 @@ import math
 from models import DiffusionModel
 from hparams import DiffusionHParams, hparams
 
+# Enhance contrast of tensor images
+def enhance_contrast(tensor_images, percentile_low=5, percentile_high=95, reduction_factor=0.3):
+    """
+    Enhance contrast of tensor images by stretching histogram between given percentiles
+    
+    Args:
+        tensor_images: Tensor of shape [B, C, H, W]
+        percentile_low: Lower percentile for histogram stretching
+        percentile_high: Upper percentile for histogram stretching
+        reduction_factor: Factor to reduce contrast strength (0=no enhancement, 1=full enhancement)
+        
+    Returns:
+        Enhanced tensor images
+    """
+    batch_size = tensor_images.shape[0]
+    processed_images = []
+    
+    # Process each image in the batch
+    for i in range(batch_size):
+        img = tensor_images[i].clone()  # [C, H, W]
+        
+        # Process each channel
+        for c in range(img.shape[0]):
+            channel = img[c]
+            
+            with torch.no_grad():
+                # Filter out NaN values
+                valid_values = channel[~torch.isnan(channel)]
+                if valid_values.numel() == 0:
+                    # Skip if all values are NaN
+                    continue
+                    
+                sorted_vals = torch.sort(valid_values.flatten())[0]
+                n_elements = sorted_vals.shape[0]
+                low_idx = max(0, int(n_elements * percentile_low / 100))
+                high_idx = min(n_elements - 1, int(n_elements * percentile_high / 100))
+                
+                low_val = sorted_vals[low_idx]
+                high_val = sorted_vals[high_idx]
+                
+                # Apply contrast reduction
+                if high_val > low_val:
+                    # Replace NaNs with mean value before normalization
+                    mean_val = valid_values.mean()
+                    nan_mask = torch.isnan(channel)
+                    channel[nan_mask] = mean_val
+                    
+                    normalized = (channel - low_val) / (high_val - low_val)  # Normalize to [0, 1]
+                    normalized = torch.clamp(normalized, 0, 1)  # Clip to [0, 1]
+                    reduced = 0.5 + (normalized - 0.5) * (1 - reduction_factor)  # Shift toward 0.5
+                    img[c] = torch.clamp(reduced, 0, 1)  # Clip to [0, 1]
+        
+        processed_images.append(img)
+    
+    return torch.stack(processed_images)
+
 # Extract values at specific timesteps
 def extract(a, t, x_shape):
     batch_size = t.shape[0]
@@ -56,9 +112,11 @@ def p_sample_ddpm(model, x, t, t_index, diffusion_params, self_cond=None):
 def p_sample_ddim(model, x, t, t_prev, diffusion_params, self_cond=None, eta=0.0):
     device = x.device
     
-    # Extract alpha_cumprod for current and previous timestep
+    # Extract alpha_cumprod for current timestep
     alpha_cumprod_t = extract(diffusion_params['alphas_cumprod'], t, x.shape)
-    alpha_cumprod_t_prev = extract(diffusion_params['alphas_cumprod'], t_prev, x.shape) if t_prev >= 0 else torch.ones_like(alpha_cumprod_t)
+    
+    # Check if this is the final step (all batch elements have the same value so we check the first one)
+    is_final_step = t_prev[0].item() < 0
     
     # Model supports self-conditioning
     predicted_noise = model(x, t, self_cond)
@@ -68,6 +126,13 @@ def p_sample_ddim(model, x, t, t_prev, diffusion_params, self_cond=None, eta=0.0
     
     # Clamp values between -1 and 1
     pred_x0 = torch.clamp(pred_x0, -1.0, 1.0)
+    
+    # Return predicted image directly at final step
+    if is_final_step:
+        return pred_x0
+    
+    # For non-final steps, continue with the DDIM formula
+    alpha_cumprod_t_prev = extract(diffusion_params['alphas_cumprod'], t_prev, x.shape)
     
     # Calculate x_t direction
     dir_xt = torch.sqrt(1. - alpha_cumprod_t_prev - eta * eta * (1. - alpha_cumprod_t_prev) * (1. - alpha_cumprod_t) / (1. - alpha_cumprod_t_prev)) * predicted_noise
@@ -148,17 +213,25 @@ def sample_diffusion(model, diffusion_params, shape=(16, 1, 28, 28), device='cud
     else:
         return img.cpu()
 
-# Save generated images
-def save_images(images, output_dir, prefix="generated"):
+# Save generated images with contrast enhancement
+def save_images(images, output_dir, prefix="generated", contrast_factor=0.3):
     os.makedirs(output_dir, exist_ok=True)
     
     batch_size = images.shape[0]
     
+    # Convert from [-1, 1] to [0, 1] range for enhancement
+    images_0_1 = (images + 1) / 2.0
+    
+    # Apply contrast enhancement
+    enhanced_images = enhance_contrast(images_0_1, 
+                                     percentile_low=2, 
+                                     percentile_high=98, 
+                                     reduction_factor=contrast_factor)
+    
     for i in range(batch_size):
-        img = images[i, 0].numpy()  # [1, H, W] -> [H, W]
+        img = enhanced_images[i, 0].numpy()  # [1, H, W] -> [H, W]
         
-        # Normalize [-1, 1] -> [0, 1] -> [0, 255]
-        img = (img + 1) / 2.0
+        # Scale to uint8 range
         img = np.clip(img, 0, 1)
         img = (img * 255).astype(np.uint8)
         
@@ -166,6 +239,42 @@ def save_images(images, output_dir, prefix="generated"):
         Image.fromarray(img, mode='L').save(image_path)
     
     print(f"{batch_size} images saved to {output_dir}.")
+
+# Create image grid with contrast enhancement
+def create_image_grid(images, nrow=4):
+    # Handle NaN values
+    if torch.isnan(images).any():
+        print("Warning: NaN values detected in images, replacing with zeros")
+        images = torch.nan_to_num(images, nan=0.0)
+    
+    # Ensure values are within expected range
+    if images.min() < -1.0 or images.max() > 1.0:
+        print(f"Warning: Image values outside expected range: min={images.min().item()}, max={images.max().item()}")
+        images = torch.clamp(images, -1.0, 1.0)
+    
+    # Convert from [-1, 1] to [0, 1] range for enhancement
+    images_0_1 = (images + 1) / 2.0
+    
+    # Apply contrast enhancement
+    enhanced_images = enhance_contrast(images_0_1, 
+                                     percentile_low=2, 
+                                     percentile_high=98, 
+                                     reduction_factor=0.3)
+    
+    # Convert back to [-1, 1] for make_grid
+    enhanced_images = enhanced_images * 2.0 - 1.0
+    
+    grid = torchvision.utils.make_grid(enhanced_images, nrow=nrow, normalize=True, 
+                                      padding=2).cpu()
+    
+    grid = grid.permute(1, 2, 0).numpy()
+    
+    # Handle any NaN values in the grid
+    if np.isnan(grid).any():
+        print("Warning: NaN values in grid after make_grid, replacing with zeros")
+        grid = np.nan_to_num(grid, nan=0.0)
+    
+    return grid
 
 # Visualize generation process
 def visualize_generation_process(intermediates, num_images=4, figsize=(15, 10), 
@@ -185,10 +294,22 @@ def visualize_generation_process(intermediates, num_images=4, figsize=(15, 10),
     
     # Plot images
     for step_idx, (timestep, images) in enumerate(intermediates):
+        # Convert to [0, 1] range for contrast enhancement
+        images_0_1 = (images + 1) / 2.0
+        
+        # Apply contrast enhancement
+        enhanced_images = enhance_contrast(images_0_1, 
+                                         percentile_low=2, 
+                                         percentile_high=98, 
+                                         reduction_factor=0.3)
+        
+        # Convert back to [-1, 1] for consistency
+        enhanced_images = enhanced_images * 2.0 - 1.0
+        
         for img_idx in range(min(num_images, images.shape[0])):
             ax = plt.subplot(gs[step_idx, img_idx])
             
-            img = images[img_idx, 0].numpy()
+            img = enhanced_images[img_idx, 0].numpy()
             ax.imshow(img, cmap='gray')
             
             if step_idx == 0:
@@ -232,15 +353,6 @@ def visualize_generation_process(intermediates, num_images=4, figsize=(15, 10),
     
     plt.close()
 
-# Create image grid
-def create_image_grid(images, nrow=4):
-    grid = torchvision.utils.make_grid(images, nrow=nrow, normalize=True, 
-                                      padding=2).cpu()
-    
-    grid = grid.permute(1, 2, 0).numpy()
-    
-    return grid
-
 # Load hyperparameters from checkpoint
 def load_hparams_from_checkpoint(checkpoint):
     if 'hparams' in checkpoint:
@@ -258,7 +370,7 @@ def load_hparams_from_checkpoint(checkpoint):
 # Main inference function
 def inference(model_path, output_dir=None, batch_size=16, num_batches=1, 
              device=None, visualize=True, seed=None, sampling_method=None,
-             ddim_steps=None, ddim_eta=None):
+             ddim_steps=None, ddim_eta=None, contrast=0.3):
     # Set reproducibility
     if seed is not None:
         torch.manual_seed(seed)
@@ -393,20 +505,28 @@ def inference(model_path, output_dir=None, batch_size=16, num_batches=1,
                 ddim_eta=loaded_hparams.ddim_sampling_eta
             )
         
-        # Save images
+        # Save images with contrast enhancement
         batch_dir = os.path.join(output_dir, f"batch_{batch_idx+1}")
-        save_images(images, batch_dir, prefix="generated")
+        save_images(images, batch_dir, prefix="generated", contrast_factor=contrast)
         
-        # Visualize grid
+        # Visualize grid with contrast enhancement
         if visualize:
             plt.figure(figsize=(10, 10))
+            
+            # Check for NaN values before visualization
+            if torch.isnan(images).any():
+                print("Warning: NaN values detected in final images, replacing with zeros")
+                images = torch.nan_to_num(images, nan=0.0)
+            
             grid = create_image_grid(images, nrow=4)
+            
             plt.imshow(grid, cmap='gray')
             plt.axis('off')
             plt.title(f"Generated Images (Batch {batch_idx+1})")
             
             grid_path = os.path.join(output_dir, f"grid_batch_{batch_idx+1}.png")
             plt.savefig(grid_path, dpi=150, bbox_inches='tight')
+            print(f"Grid visualization saved to {grid_path}")
             plt.close()
     
     print(f"\nAll images generated in {output_dir}.")
@@ -427,6 +547,8 @@ def parse_args():
                         help="Number of DDIM sampling steps (fewer = faster)")
     parser.add_argument("--ddim_eta", type=float, default=None, 
                         help="DDIM eta parameter (0: deterministic, 1: stochastic)")
+    parser.add_argument("--contrast", type=float, default=0.3, 
+                        help="Contrast enhancement factor (0: full enhancement, 1: no enhancement)")
     
     return parser.parse_args()
 
@@ -443,5 +565,6 @@ if __name__ == "__main__":
         seed=args.seed,
         sampling_method=args.sampling_method,
         ddim_steps=args.ddim_steps,
-        ddim_eta=args.ddim_eta
+        ddim_eta=args.ddim_eta,
+        contrast=args.contrast
     )
