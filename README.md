@@ -38,14 +38,14 @@ Train with MNIST (default):
 python train.py --use_mnist
 ```
 
-Train from existing [MNIST / custom dataset] model:
-```bash
-python train.py [--use_mnist / --data_dir path/to/images] --resume path/to/model
-```
-
 Train with custom dataset:
 ```bash
 python train.py --data_dir path/to/images --image_size 64 --image_channels 3
+```
+
+Train from existing [MNIST / custom dataset] model:
+```bash
+python train.py [--use_mnist / --data_dir path/to/images] --resume path/to/model
 ```
 
 ### Key Parameters
