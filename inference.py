@@ -242,10 +242,6 @@ def save_images(images, output_dir, prefix="generated", contrast_factor=0.3):
 
 # Create image grid with contrast enhancement
 def create_image_grid(images, nrow=4):
-    # Handle NaN values
-    if torch.isnan(images).any():
-        print("Warning: NaN values detected in images, replacing with zeros")
-        images = torch.nan_to_num(images, nan=0.0)
     
     # Ensure values are within expected range
     if images.min() < -1.0 or images.max() > 1.0:
@@ -268,11 +264,6 @@ def create_image_grid(images, nrow=4):
                                       padding=2).cpu()
     
     grid = grid.permute(1, 2, 0).numpy()
-    
-    # Handle any NaN values in the grid
-    if np.isnan(grid).any():
-        print("Warning: NaN values in grid after make_grid, replacing with zeros")
-        grid = np.nan_to_num(grid, nan=0.0)
     
     return grid
 
@@ -512,11 +503,6 @@ def inference(model_path, output_dir=None, batch_size=16, num_batches=1,
         # Visualize grid with contrast enhancement
         if visualize:
             plt.figure(figsize=(10, 10))
-            
-            # Check for NaN values before visualization
-            if torch.isnan(images).any():
-                print("Warning: NaN values detected in final images, replacing with zeros")
-                images = torch.nan_to_num(images, nan=0.0)
             
             grid = create_image_grid(images, nrow=4)
             
